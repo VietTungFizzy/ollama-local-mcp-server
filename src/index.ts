@@ -70,6 +70,13 @@ function createMcpServer(): McpServer {
       const text = query ?? prompt ?? "";
       const selectedModel = model ?? DEFAULT_OLLAMA_MODEL;
 
+      console.log(`[debug] ask_ollama called`);
+      console.log(`[debug]   host      : ${OLLAMA_BASE_URL}`);
+      console.log(`[debug]   model     : ${selectedModel}`);
+      console.log(`[debug]   text      : ${JSON.stringify(text.slice(0, 300))}`);
+      console.log(`[debug]   system    : ${JSON.stringify(system?.slice(0, 100) ?? null)}`);
+      console.log(`[debug]   cloud mode: ${!!OLLAMA_API_KEY}`);
+
       // Heartbeat: return alive response without calling Ollama
       if (!text.trim()) {
         return {
@@ -102,6 +109,8 @@ function createMcpServer(): McpServer {
           messages,
         });
 
+        console.log(`[debug] Ollama reply (${reply.length} chars): ${JSON.stringify(reply.slice(0, 300))}${reply.length > 300 ? "…" : ""}`);
+
         return {
           content: [
             {
@@ -111,7 +120,16 @@ function createMcpServer(): McpServer {
           ],
         };
       } catch (error) {
-        console.error("Error calling Ollama:", error);
+        console.error("[debug] Error calling Ollama:");
+        console.error(`[debug]   host : ${OLLAMA_BASE_URL}`);
+        console.error(`[debug]   model: ${selectedModel}`);
+        if (error instanceof Error) {
+          console.error(`[debug]   name : ${error.name}`);
+          console.error(`[debug]   msg  : ${error.message}`);
+          if ("cause" in error) console.error(`[debug]   cause: ${String((error as NodeJS.ErrnoException).cause)}`);
+        } else {
+          console.error(`[debug]   raw  : ${String(error)}`);
+        }
 
         return {
           content: [
