@@ -277,6 +277,91 @@ function createMcpServer(): McpServer {
     },
   );
 
+  server.registerTool(
+    "web_search",
+    {
+      description: "Search the web for up-to-date information",
+      inputSchema: {
+        query: z.string().describe("The search query"),
+        max_results: z
+          .number()
+          .optional()
+          .describe("Maximum results to return (default 5, max 10)"),
+      },
+    },
+    async ({ query, max_results }) => {
+      try {
+        const searchResult = await ollamaClient.webSearch({
+          query,
+          ...(max_results ? { maxResults: max_results } : {}),
+        });
+
+        if (!searchResult.results?.length) {
+          return {
+            content: [{ type: "text", text: "No results found." }],
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: searchResult.results
+                .map((r: WebSearchResult, i: number) => `[${i + 1}] ${r.content}`)
+                .join("\n\n"),
+            },
+          ],
+        };
+      } catch (error) {
+        console.error("Error calling web_search:", error);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Web search failed: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "web_fetch",
+    {
+      description: "Fetch the content of a web page by URL",
+      inputSchema: {
+        url: z.string().describe("The URL to fetch"),
+      },
+    },
+    async ({ url }) => {
+      try {
+        const fetchResult = await ollamaClient.webFetch({ url });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `**${fetchResult.title}**\n${fetchResult.url}\n\n${fetchResult.content}`,
+            },
+          ],
+        };
+      } catch (error) {
+        console.error("Error calling web_fetch:", error);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Web fetch failed: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
   return server;
 }
 
