@@ -1,6 +1,6 @@
 import express, { Request, Response } from "express";
 import { randomUUID } from "node:crypto";
-import { Ollama } from "ollama";
+import { Ollama, type Message, type Tool, type WebSearchResult } from "ollama";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -18,22 +18,121 @@ const ollamaClient = new Ollama({
     : {}),
 });
 
-type OllamaMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
-};
+const OLLAMA_TOOLS: Tool[] = [
+  {
+    type: "function",
+    function: {
+      name: "list_ollama_models",
+      description: "List models available in the Ollama container",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "Search the web for up-to-date information",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query" },
+          max_results: { type: "number", description: "Maximum results to return (default 5, max 10)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_fetch",
+      description: "Fetch the content of a web page by URL",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The URL to fetch" },
+        },
+        required: ["url"],
+      },
+    },
+  },
+];
+
+async function executeLocalTool(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  switch (name) {
+    case "list_ollama_models": {
+      const models = await listOllamaModels();
+      return models.length
+        ? `Available Ollama models:\n${models.map((m) => `- ${m}`).join("\n")}`
+        : "No Ollama models found. Run `ollama pull llama3.2` in the Ollama container.";
+    }
+    case "web_search": {
+      const query = String(args.query ?? "");
+      const maxResults = args.max_results ? Number(args.max_results) : undefined;
+      const searchResult = await ollamaClient.webSearch({ query, ...(maxResults ? { maxResults } : {}) });
+      if (!searchResult.results?.length) {
+        return "No results found.";
+      }
+      return searchResult.results
+        .map((r: WebSearchResult, i: number) => `[${i + 1}] ${r.content}`)
+        .join("\n\n");
+    }
+    case "web_fetch": {
+      const url = String(args.url ?? "");
+      const fetchResult = await ollamaClient.webFetch({ url });
+      return `**${fetchResult.title}**\n${fetchResult.url}\n\n${fetchResult.content}`;
+    }
+    default:
+      return `Tool "${name}" is not directly executable by this server.`;
+  }
+}
+
+const MAX_TOOL_STEPS = 10;
 
 async function callOllamaChat(options: {
   model: string;
-  messages: OllamaMessage[];
+  messages: Message[];
+  tools?: Tool[];
 }): Promise<string> {
-  const response = await ollamaClient.chat({
-    model: options.model,
-    messages: options.messages,
-    stream: false,
-  });
+  const messages: Message[] = [...options.messages];
 
-  return response.message.content;
+  for (let step = 0; step < MAX_TOOL_STEPS; step++) {
+    const response = await ollamaClient.chat({
+      model: options.model,
+      messages,
+      tools: options.tools,
+      stream: false,
+    });
+
+    const msg = response.message;
+
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      return msg.content;
+    }
+
+    messages.push({ role: "assistant", content: msg.content ?? "", tool_calls: msg.tool_calls });
+
+    for (const toolCall of msg.tool_calls) {
+      const toolName = toolCall.function.name;
+      const toolArgs = (toolCall.function.arguments ?? {}) as Record<string, unknown>;
+      let toolResult: string;
+
+      try {
+        toolResult = await executeLocalTool(toolName, toolArgs);
+      } catch (err) {
+        toolResult = `Error executing tool "${toolName}": ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+      }
+
+      messages.push({ role: "tool", content: toolResult });
+    }
+  }
+
+  return "Reached maximum tool call steps without a final response.";
 }
 
 async function listOllamaModels(): Promise<string[]> {
@@ -83,7 +182,7 @@ function createMcpServer(): McpServer {
       }
 
       try {
-        const messages: OllamaMessage[] = [];
+        const messages: Message[] = [];
 
         if (system) {
           messages.push({
@@ -100,6 +199,7 @@ function createMcpServer(): McpServer {
         const reply = await callOllamaChat({
           model: selectedModel,
           messages,
+          tools: OLLAMA_TOOLS,
         });
 
         return {
